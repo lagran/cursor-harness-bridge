@@ -1,0 +1,7 @@
+[Unit]
+Description=Refresh DeepSeek Harness Cursor SDK authentication state
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl try-restart cursor-harness.service

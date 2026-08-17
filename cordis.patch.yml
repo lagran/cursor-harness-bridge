@@ -1,0 +1,46 @@
+# Disable the default model loop, then mount the Cursor factory as its own row.
+# Harness intentionally rejects changing an existing row's plugin name.
+- id: agent-loop
+  disabled: true
+
+- insert:
+  - id: cursor-agent-factory
+    name: 'cursor-harness-bridge'
+    config:
+      apiKeyEnv: CURSOR_API_KEY
+      defaultModel: !!js process.env.CURSOR_MODEL ?? 'auto'
+      stateDir: !!js process.env.CURSOR_BRIDGE_STATE_DIR
+      sandbox: true
+      autoReview: true
+      settingSources: []
+      modelCacheMs: 60000
+
+- id: agent-default-model
+  config:
+    provider: cursor-agent
+    model: !!js process.env.CURSOR_MODEL ?? 'auto'
+
+# These routes would select an LLM, but this profile deliberately selects a
+# complete Cursor Agent runtime. Keeping both would make the model picker
+# promise combinations the custom factory cannot execute.
+- id: llm-deepseek
+  disabled: true
+
+- id: llm-pi-ai
+  disabled: true
+
+- id: web-search-deepseek
+  disabled: true
+
+# The Cursor bridge owns neither of these interactive surfaces. Cursor local
+# headless runs use Sandbox + Auto-review and cannot answer human approvals.
+- id: ui-permission
+  disabled: true
+
+- id: ui-plan
+  disabled: true
+
+# The Cursor catalog adapter intentionally cannot perform auxiliary raw LLM
+# requests, so use the deterministic first-prompt title fallback.
+- id: session-title-llm
+  disabled: true

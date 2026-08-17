@@ -1,0 +1,23 @@
+[Unit]
+Description=DeepSeek Harness Web UI backed by Cursor Agent SDK
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=@RUN_USER@
+Group=@RUN_GROUP@
+WorkingDirectory=@WORKSPACE_DIR@
+EnvironmentFile=-@ENV_FILE@
+Environment=NODE_ENV=production
+Environment=PATH=@SERVICE_PATH@
+ExecStart=@DSH_BIN@ web --host 127.0.0.1 --port @HARNESS_PORT@ --trusted-host @HARNESS_DOMAIN@
+Restart=on-failure
+RestartSec=3
+KillMode=mixed
+TimeoutStopSec=20
+LimitNOFILE=65536
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,229 @@
+/*
+ * Deployment-owned responsive overrides for DeepSeek Harness RC.6.
+ * The upstream settings dialog is a fixed 188px + content desktop split;
+ * below 640px it becomes a full-screen sheet with horizontally scrollable
+ * section tabs and one full-width content column.
+ */
+
+.harness-image-upload-button {
+  width: 34px;
+  height: 34px;
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: 50%;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  touch-action: manipulation;
+}
+
+.harness-image-upload-button:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.harness-image-upload-button:focus-visible {
+  outline: 2px solid var(--dsw-static-neutral-bluish-400);
+  outline-offset: 2px;
+}
+
+.harness-image-upload-button:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+@media (max-width: 640px), (max-height: 500px) and (pointer: coarse) {
+  .harness-image-upload-button {
+    width: 44px;
+    height: 44px;
+  }
+
+  .VOzbGW_overlay {
+    align-items: stretch !important;
+    justify-content: stretch !important;
+  }
+
+  .VOzbGW_panel {
+    width: 100vw !important;
+    max-width: none !important;
+    height: 100vh !important;
+    height: 100dvh !important;
+    max-height: none !important;
+    border-radius: 0 !important;
+    flex-direction: column !important;
+  }
+
+  .VOzbGW_nav {
+    width: 100% !important;
+    flex: 0 0 auto !important;
+    gap: 8px !important;
+    padding:
+      max(12px, env(safe-area-inset-top))
+      12px
+      0 !important;
+    border-bottom: 1px solid var(--dsw-alias-border-l2);
+  }
+
+  .VOzbGW_navTitle {
+    min-height: 44px;
+    padding: 8px 52px 8px 4px !important;
+    font-size: 18px !important;
+    line-height: 28px !important;
+  }
+
+  .VOzbGW_navList {
+    width: 100%;
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px !important;
+    padding: 0 0 10px;
+    overflow: visible;
+  }
+
+  .VOzbGW_navCell {
+    width: 100%;
+    min-width: 0;
+    height: 44px !important;
+    padding: 10px 14px !important;
+    touch-action: manipulation;
+  }
+
+  .VOzbGW_navLabel {
+    overflow: visible !important;
+    text-overflow: clip !important;
+  }
+
+  .VOzbGW_content {
+    width: 100% !important;
+    min-width: 0 !important;
+    flex: 1 1 auto !important;
+    overflow: hidden;
+  }
+
+  .VOzbGW_header {
+    min-height: 44px;
+    height: auto !important;
+    padding: 8px 16px 0 !important;
+  }
+
+  .VOzbGW_actions button {
+    min-height: 44px;
+    touch-action: manipulation;
+  }
+
+  .VOzbGW_close {
+    width: 44px !important;
+    height: 44px !important;
+    position: absolute;
+    top: max(12px, env(safe-area-inset-top));
+    right: 10px;
+    z-index: 2;
+    touch-action: manipulation;
+  }
+
+  .VOzbGW_options {
+    width: 100%;
+    box-sizing: border-box;
+    padding:
+      0
+      16px
+      max(20px, calc(env(safe-area-inset-bottom) + 12px)) !important;
+    overflow-x: hidden;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .VOzbGW_options *,
+  .VOzbGW_options *::before,
+  .VOzbGW_options *::after {
+    box-sizing: border-box;
+    min-width: 0;
+  }
+
+  .VOzbGW_options button {
+    min-height: 44px;
+    touch-action: manipulation;
+  }
+
+  ._5QVD0a_row {
+    align-items: stretch !important;
+    flex-direction: column !important;
+    gap: 12px !important;
+  }
+
+  ._5QVD0a_rowText {
+    width: 100%;
+    padding-right: 0 !important;
+  }
+
+  ._5QVD0a_desc {
+    font-size: 14px !important;
+    line-height: 20px !important;
+  }
+
+  ._5QVD0a_selector {
+    width: 100%;
+    min-height: 44px;
+    justify-content: space-between;
+    border-radius: 14px !important;
+  }
+
+  .hVGvvW_row {
+    min-height: 60px;
+    gap: 12px !important;
+  }
+
+  .hVGvvW_selector {
+    min-height: 44px !important;
+  }
+
+  ._8HJdBW_cubeRow {
+    display: grid !important;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px !important;
+  }
+
+  ._8HJdBW_themeCube {
+    width: 100%;
+    min-height: 76px;
+    padding: 12px 4px !important;
+    border-radius: 14px !important;
+  }
+
+  /* Long API/model values and plugin metadata must wrap instead of widening
+     the sheet. */
+  .VOzbGW_options pre,
+  .VOzbGW_options code,
+  .VOzbGW_options input,
+  .VOzbGW_options textarea {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .VOzbGW_options input,
+  .VOzbGW_options textarea,
+  .VOzbGW_options select {
+    font-size: 16px !important;
+  }
+}
+
+@media (max-height: 500px) and (pointer: coarse) and (orientation: landscape) {
+  .VOzbGW_nav {
+    padding-top: max(8px, env(safe-area-inset-top)) !important;
+  }
+
+  .VOzbGW_navTitle {
+    min-height: 36px;
+    padding-top: 4px !important;
+    padding-bottom: 4px !important;
+  }
+
+  .VOzbGW_navList {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    padding-bottom: 6px;
+  }
+}
