@@ -13,10 +13,12 @@ CLIENTS_DIR="${MTLS_ROOT}/clients"
 OPENSSL_CONFIG="${CA_DIR}/openssl.cnf"
 CA_KEY="${CA_PRIVATE_DIR}/ca.key"
 CA_CERT="${CA_DIR}/ca.crt"
+CA_NAME_FILE="${CA_DIR}/ca-common-name"
 PUBLIC_CA_CERT="${PUBLIC_DIR}/ca.crt"
 PUBLIC_CRL="${PUBLIC_DIR}/ca.crl"
 NGINX_CONTAINER="${NGINX_CONTAINER:-}"
 CA_ORGANIZATION="${HARNESS_CA_ORGANIZATION:-Cursor Harness}"
+CA_COMMON_NAME="${HARNESS_CA_COMMON_NAME:-}"
 
 usage() {
   cat <<'EOF'
@@ -31,6 +33,7 @@ Environment:
   HARNESS_MTLS_DIR          Certificate state root
                             (default: $XDG_DATA_HOME/cursor-harness-bridge/mtls)
   HARNESS_CA_ORGANIZATION   Certificate subject organization
+  HARNESS_CA_COMMON_NAME    Unique CA name; generated and persisted by default
   NGINX_CONTAINER           Optional Nginx container to validate and reload
 EOF
 }
@@ -55,6 +58,54 @@ validate_ca_organization() {
     echo "HARNESS_CA_ORGANIZATION contains unsupported characters" >&2
     exit 2
   fi
+}
+
+validate_ca_common_name() {
+  if [[ ! "${CA_COMMON_NAME}" =~ ^[A-Za-z0-9._\ -]{1,96}$ ]]; then
+    echo "HARNESS_CA_COMMON_NAME contains unsupported characters" >&2
+    exit 2
+  fi
+}
+
+certificate_common_name() {
+  openssl x509 \
+    -in "${CA_CERT}" \
+    -noout \
+    -subject \
+    -nameopt multiline |
+    awk -F'= ' '/commonName/{print $2; exit}'
+}
+
+resolve_ca_common_name() {
+  local requested="${CA_COMMON_NAME}"
+  local persisted=""
+  local existing=""
+  [[ -f "${CA_NAME_FILE}" ]] && persisted="$(<"${CA_NAME_FILE}")"
+  [[ -f "${CA_CERT}" ]] && existing="$(certificate_common_name)"
+
+  if [[ -n "${requested}" ]]; then
+    CA_COMMON_NAME="${requested}"
+  elif [[ -n "${existing}" ]]; then
+    # Existing certificates are authoritative during upgrades: changing their
+    # DN would invalidate every issued client certificate.
+    CA_COMMON_NAME="${existing}"
+  elif [[ -n "${persisted}" ]]; then
+    CA_COMMON_NAME="${persisted}"
+  else
+    CA_COMMON_NAME="Cursor Harness Client CA $(openssl rand -hex 16)"
+  fi
+  validate_ca_common_name
+
+  if [[ -n "${existing}" && "${existing}" != "${CA_COMMON_NAME}" ]]; then
+    echo "Configured CA name does not match existing certificate: ${existing}" >&2
+    exit 1
+  fi
+  if [[ -n "${persisted}" && "${persisted}" != "${CA_COMMON_NAME}" ]]; then
+    echo "Persisted CA name does not match resolved name: ${persisted}" >&2
+    exit 1
+  fi
+  printf '%s\n' "${CA_COMMON_NAME}" >"${CA_NAME_FILE}"
+  chmod 600 "${CA_NAME_FILE}"
 }
 
 write_openssl_config() {
@@ -93,7 +144,7 @@ x509_extensions     = v3_ca
 default_md          = sha256
 
 [ ca_dn ]
-CN = Harness Private Client CA
+CN = ${CA_COMMON_NAME}
 O  = ${CA_ORGANIZATION}
 
 [ v3_ca ]
@@ -132,6 +183,7 @@ init_ca() {
   install -d -m 0700 "${MTLS_ROOT}" "${CA_DIR}" "${CA_PRIVATE_DIR}" "${CLIENTS_DIR}"
   install -d -m 0700 "${CA_NEW_CERTS_DIR}"
   install -d -m 0755 "${PUBLIC_DIR}"
+  resolve_ca_common_name
   write_openssl_config
 
   if [[ ! -f "${CA_KEY}" || ! -f "${CA_CERT}" ]]; then
@@ -161,11 +213,15 @@ init_ca() {
   publish_ca
   generate_crl
   echo "Harness client CA is ready under ${MTLS_ROOT}"
+  echo "  acceptable issuer: ${CA_COMMON_NAME}"
 }
 
 ensure_ca() {
   if [[ ! -f "${CA_KEY}" || ! -f "${CA_CERT}" || ! -f "${OPENSSL_CONFIG}" ]]; then
     init_ca
+  else
+    require_openssl
+    resolve_ca_common_name
   fi
 }
 
@@ -209,7 +265,7 @@ issue_client() {
   printf '%s\n' "${password}" >"${password_file}"
   openssl pkcs12 \
     -export \
-    -name "Harness ${device}" \
+    -name "${CA_COMMON_NAME} - ${device}" \
     -inkey "${key}" \
     -in "${cert}" \
     -certfile "${CA_CERT}" \

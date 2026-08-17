@@ -31,6 +31,7 @@
     "test:web": "python3.11 tests/web_smoke.py",
     "test:mobile": "python3.11 tests/mobile_settings_smoke.py",
     "test:image": "python3.11 tests/image_upload_smoke.py",
+    "test:mtls": "bash tests/mtls_unique_ca_test.sh",
     "profile:install": "npm run build && node scripts/install-profile.mjs",
     "web": "node scripts/start.mjs",
     "smoke": "node scripts/smoke.mjs"

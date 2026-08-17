@@ -118,6 +118,7 @@ Override it and the certificate subject for your environment:
 ```bash
 export HARNESS_MTLS_DIR=/var/lib/cursor-harness/mtls
 export HARNESS_CA_ORGANIZATION="Example Organization"
+export HARNESS_CA_COMMON_NAME="Example Production Harness CA"
 # Optional: reload this container after CRL updates.
 export NGINX_CONTAINER=my-nginx
 
@@ -126,6 +127,14 @@ export NGINX_CONTAINER=my-nginx
 ./scripts/harness-mtls.sh issue phone
 ./scripts/harness-mtls.sh list
 ```
+
+If `HARNESS_CA_COMMON_NAME` is omitted on a new deployment, the helper
+generates a random unique CA Common Name and persists it in
+`$HARNESS_MTLS_DIR/ca/ca-common-name`. This keeps the acceptable issuer DN
+different across independent Harness deployments, so browsers do not offer a
+client certificate from another installation. An existing CA's subject is
+authoritative and never changes during upgrades; an explicit mismatching name
+is rejected.
 
 Install packages from
 `$HARNESS_MTLS_DIR/clients/<device>/<device>.p12`; each directory contains its
@@ -251,6 +260,7 @@ npm run build
 CURSOR_WORKSPACE=/path/to/project npm run test:web
 npm run test:mobile
 npm run test:image
+npm run test:mtls
 ```
 
 The mobile and image tests inject deployment assets themselves when run
