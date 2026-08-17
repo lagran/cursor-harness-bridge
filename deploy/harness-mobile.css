@@ -3,6 +3,13 @@
  * The upstream settings dialog is a fixed 188px + content desktop split;
  * below 640px it becomes a full-screen sheet with horizontally scrollable
  * section tabs and one full-width content column.
+ *
+ * The app shell keeps its desktop three-column grid (sidebar / center /
+ * details) on every viewport. On phones an open sidebar squeezes the
+ * transcript into a ~150px column, so the overrides below turn both side
+ * columns into fixed overlay panels and keep the center column full width.
+ * `harness-mobile-nav.js` closes the sidebar after a session is picked and
+ * turns scrim taps into close events.
  */
 
 .harness-image-upload-button {
@@ -39,6 +46,174 @@
   .harness-image-upload-button {
     width: 44px;
     height: 44px;
+  }
+
+  /* ------------------------------------------------------------------
+   * App shell: side columns become overlays, center keeps full width.
+   * --------------------------------------------------------------- */
+
+  /* The desktop drag handle between columns is meaningless on touch. */
+  .pI_x6G_handle {
+    display: none !important;
+  }
+
+  /* Pin each column to its grid track. Without this, removing the sidebar
+     from the flow (fixed overlay below) lets the center column auto-place
+     into the first track and collapse to rail width. */
+  .pI_x6G_sidebarCol {
+    grid-column: 1 !important;
+  }
+
+  .pI_x6G_centerCol {
+    grid-column: 2 !important;
+  }
+
+  .pI_x6G_detailsCol {
+    grid-column: 3 !important;
+  }
+
+  /* Sidebar open: never let the grid take width from the transcript. */
+  .pI_x6G_frame:not([data-sidebar-collapsed]) {
+    grid-template-columns: 56px minmax(0px, 1fr) 0px !important;
+  }
+
+  .pI_x6G_frame:not([data-sidebar-collapsed]) .pI_x6G_sidebarCol {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: min(324px, 86vw);
+    z-index: 92;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+    background: var(--dsw-alias-bg-primary, #fff);
+    box-shadow: 0 0 40px rgba(12, 16, 24, 0.28);
+    animation: harness-side-panel-in 0.24s ease;
+  }
+
+  /* Details open: same treatment, sliding in from the right. */
+  .pI_x6G_frame:not([data-details-collapsed]) {
+    grid-template-columns: 56px minmax(0px, 1fr) 0px !important;
+  }
+
+  .pI_x6G_frame:not([data-details-collapsed]) .pI_x6G_detailsCol {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    right: 0;
+    width: min(360px, 92vw);
+    z-index: 92;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+    background: var(--dsw-alias-bg-primary, #fff);
+    box-shadow: 0 0 40px rgba(12, 16, 24, 0.28);
+    animation: harness-side-panel-in-right 0.24s ease;
+  }
+
+  /* Scrim behind an open side panel. Taps on it land on the frame
+     element itself; harness-mobile-nav.js turns them into close events. */
+  .pI_x6G_frame:not([data-sidebar-collapsed])::after,
+  .pI_x6G_frame:not([data-details-collapsed])::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: 90;
+    background: rgba(12, 16, 24, 0.42);
+    animation: harness-scrim-in 0.24s ease;
+  }
+
+  @keyframes harness-side-panel-in {
+    from {
+      transform: translateX(-28px);
+      opacity: 0.2;
+    }
+    to {
+      transform: translateX(0);
+      opacity: 1;
+    }
+  }
+
+  @keyframes harness-side-panel-in-right {
+    from {
+      transform: translateX(28px);
+      opacity: 0.2;
+    }
+    to {
+      transform: translateX(0);
+      opacity: 1;
+    }
+  }
+
+  @keyframes harness-scrim-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  /* ------------------------------------------------------------------
+   * Session list: comfortable rows, no hover-only artifacts.
+   * --------------------------------------------------------------- */
+
+  .YDXeBa_sessionRow,
+  .YDXeBa_projectRow {
+    min-height: 44px;
+    padding-top: 4px;
+    padding-bottom: 4px;
+    touch-action: manipulation;
+  }
+
+  .YDXeBa_title {
+    line-height: 20px;
+  }
+
+  /* The "Created …" tooltip floats past the panel edge on touch screens. */
+  .YDXeBa_hoverTime {
+    display: none !important;
+  }
+
+  .YDXeBa_sessionRow .YDXeBa_time {
+    flex: 0 0 auto;
+  }
+
+  /* Keep row action buttons reachable without shrinking the title. */
+  .YDXeBa_rowActions {
+    flex: 0 0 auto;
+  }
+
+  /* ------------------------------------------------------------------
+   * Transcript header: the desktop header spends most of a phone-width
+   * row on the mode badge and "Session log" label, leaving ~70px for the
+   * session title. Collapse both to icons so the title gets the space.
+   * --------------------------------------------------------------- */
+
+  .wSkVaW_header {
+    padding-left: 12px !important;
+    padding-right: 12px !important;
+  }
+
+  .wSkVaW_headerActions .SVAs4q_label {
+    font-size: 0;
+    gap: 0;
+  }
+
+  .wSkVaW_headerActions .SVAs4q_label svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  .nL4_yW_sessionLogButton {
+    min-width: 44px;
+    min-height: 44px;
+    justify-content: center;
+  }
+
+  .nL4_yW_sessionLogButton > span {
+    display: none;
   }
 
   .VOzbGW_overlay {

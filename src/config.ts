@@ -14,6 +14,7 @@ export interface Config {
   sandbox: boolean
   autoReview: boolean
   settingSources: SettingSource[]
+  additionalDirs: string[]
   modelCacheMs: number
 }
 
@@ -33,6 +34,7 @@ export const Config: z<Config> = z.object({
       z.const('all'),
     ]),
   ).default([]),
+  additionalDirs: z.array(z.string()).default([]),
   modelCacheMs: z.number().step(1).min(1_000).default(60_000),
 })
 

@@ -10,9 +10,10 @@
       apiKeyEnv: CURSOR_API_KEY
       defaultModel: !!js process.env.CURSOR_MODEL ?? 'auto'
       stateDir: !!js process.env.CURSOR_BRIDGE_STATE_DIR
-      sandbox: true
-      autoReview: true
-      settingSources: []
+      sandbox: !!js process.env.CURSOR_SANDBOX !== 'false'
+      autoReview: !!js process.env.CURSOR_AUTO_REVIEW !== 'false'
+      settingSources: !!js "process.env.CURSOR_SETTING_SOURCES ? process.env.CURSOR_SETTING_SOURCES.split(',') : []"
+      additionalDirs: !!js "process.env.CURSOR_ADDITIONAL_DIRS ? process.env.CURSOR_ADDITIONAL_DIRS.split(',') : []"
       modelCacheMs: 60000
 
 - id: agent-default-model

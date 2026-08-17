@@ -51,6 +51,7 @@ describe('CursorAgentFactory lifecycle', () => {
       sandbox: true,
       autoReview: true,
       settingSources: [],
+      additionalDirs: [],
       modelCacheMs: 60_000,
     }
     const catalog = new CursorModelCatalog()

@@ -429,6 +429,9 @@ export class CursorHarnessAgent implements Agent {
       ),
       local: {
         cwd: this.session.header.cwd || process.cwd(),
+        ...(this.dependencies.config.additionalDirs.length === 0
+          ? {}
+          : { dirs: this.dependencies.config.additionalDirs }),
         store: this.dependencies.store,
         sandboxOptions: { enabled: this.dependencies.config.sandbox },
         autoReview: this.dependencies.config.autoReview,

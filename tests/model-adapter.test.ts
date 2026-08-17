@@ -11,6 +11,7 @@ const config: Config = {
   sandbox: true,
   autoReview: true,
   settingSources: [],
+  additionalDirs: [],
   modelCacheMs: 60_000,
 }
 
