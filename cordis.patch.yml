@@ -10,11 +10,11 @@
       apiKeyEnv: CURSOR_API_KEY
       defaultModel: !!js process.env.CURSOR_MODEL ?? 'auto'
       stateDir: !!js process.env.CURSOR_BRIDGE_STATE_DIR
-      sandbox: !!js process.env.CURSOR_SANDBOX !== 'false'
-      autoReview: !!js process.env.CURSOR_AUTO_REVIEW !== 'false'
       settingSources: !!js "process.env.CURSOR_SETTING_SOURCES ? process.env.CURSOR_SETTING_SOURCES.split(',') : []"
       additionalDirs: !!js "process.env.CURSOR_ADDITIONAL_DIRS ? process.env.CURSOR_ADDITIONAL_DIRS.split(',') : []"
       modelCacheMs: 60000
+      workspaceScanCacheMs: !!js "Number(process.env.CURSOR_WORKSPACE_SCAN_CACHE_MS ?? 300000)"
+      runStallMs: !!js "Number(process.env.CURSOR_RUN_STALL_MS ?? 90000)"
 
 - id: agent-default-model
   config:
@@ -33,11 +33,8 @@
 - id: web-search-deepseek
   disabled: true
 
-# The Cursor bridge owns neither of these interactive surfaces. Cursor local
-# headless runs use Sandbox + Auto-review and cannot answer human approvals.
-- id: ui-permission
-  disabled: true
-
+# Cursor owns the model loop, but the Harness permission surface remains
+# enabled because the bridge maps its per-session policy into Cursor options.
 - id: ui-plan
   disabled: true
 

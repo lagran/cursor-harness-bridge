@@ -5,6 +5,7 @@ import { installSettingsSection } from '@deepseek-ai/dsh-settings'
 import {
   Config,
   assertRuntimePrerequisites,
+  installCursorSandboxCompatibility,
   type Config as BridgeConfig,
 } from './config.js'
 import { defaultCursorRuntime } from './cursor-runtime.js'
@@ -25,11 +26,14 @@ export const inject = [
   'systemPrompt',
   'attachments',
   'credentials',
+  'sandboxPolicy',
 ]
 export { Config }
 
 export async function apply(ctx: Context, config: BridgeConfig): Promise<void> {
-  assertRuntimePrerequisites(config)
+  installCursorSandboxCompatibility()
+  assertRuntimePrerequisites()
+  defaultCursorRuntime.configureWorkspaceCache(config.workspaceScanCacheMs)
   const modelCatalog = new CursorModelCatalog()
   const apiKeyRef = credentialRef(config.apiKeyEnv)
   const resolveApiKey = async (): Promise<string | undefined> => {
@@ -98,7 +102,9 @@ export async function apply(ctx: Context, config: BridgeConfig): Promise<void> {
   )
 
   ctx.logger.info(
-    `Cursor AgentFactory active (models=${initialModels.length}, default=${config.defaultModel}, sandbox=${config.sandbox}, autoReview=${config.autoReview})`,
+    `Cursor AgentFactory active (models=${initialModels.length}, `
+    + `default=${config.defaultModel}, permissions=Harness session policy, `
+    + `workspaceScanCacheMs=${config.workspaceScanCacheMs}, runStallMs=${config.runStallMs})`,
   )
 }
 

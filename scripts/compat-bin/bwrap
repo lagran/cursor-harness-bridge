@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Bubblewrap 0.4 (shipped by RHEL 8) cannot mount a file over a destination
+# that is itself a symlink. Cursor includes both common CA symlink paths and
+# their resolved targets as read-only self-binds, so its preflight otherwise
+# fails before every sandboxed command. When the resolved target has its own
+# equivalent bind, dropping only the redundant symlink bind preserves the same
+# read policy while remaining compatible with the older Bubblewrap.
+
+real_bwrap="${CURSOR_REAL_BWRAP:-}"
+if [[ -z "${real_bwrap}" ]]; then
+  for candidate in /usr/bin/bwrap /bin/bwrap; do
+    if [[ -x "${candidate}" ]]; then
+      real_bwrap="${candidate}"
+      break
+    fi
+  done
+fi
+if [[ -z "${real_bwrap}" ]]; then
+  echo "Cursor sandbox compatibility wrapper could not locate the real bwrap binary." >&2
+  exit 127
+fi
+
+original=("$@")
+filtered=()
+i=0
+while ((i < ${#original[@]})); do
+  if [[ "${original[i]}" == "--ro-bind" ]] && ((i + 2 < ${#original[@]})); then
+    source_path="${original[i + 1]}"
+    destination_path="${original[i + 2]}"
+    if [[ "${source_path}" == "${destination_path}" && -L "${source_path}" ]]; then
+      resolved_path="$(readlink -f -- "${source_path}" || true)"
+      resolved_is_bound=0
+      if [[ -n "${resolved_path}" ]]; then
+        j=0
+        while ((j + 2 < ${#original[@]})); do
+          if [[
+            "${original[j]}" == "--ro-bind"
+            && "${original[j + 1]}" == "${resolved_path}"
+            && "${original[j + 2]}" == "${resolved_path}"
+          ]]; then
+            resolved_is_bound=1
+            break
+          fi
+          ((j += 1))
+        done
+      fi
+      if ((resolved_is_bound == 1)); then
+        ((i += 3))
+        continue
+      fi
+    fi
+  fi
+  filtered+=("${original[i]}")
+  ((i += 1))
+done
+
+exec "${real_bwrap}" "${filtered[@]}"

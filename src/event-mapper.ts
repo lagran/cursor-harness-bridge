@@ -80,6 +80,10 @@ export class CursorEventMapper {
       && (this.step.chunkSeqs.length > 0 || this.step.assistantLogged)
   }
 
+  hasRunOutput(): boolean {
+    return this.hasAssistantOutput() || this.tools.size > 0
+  }
+
   handleDelta(update: InteractionUpdate): void {
     switch (update.type) {
       case 'text-delta':

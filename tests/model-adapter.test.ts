@@ -8,11 +8,11 @@ import { CursorModelCatalog } from '../src/model-catalog.js'
 const config: Config = {
   apiKeyEnv: 'CURSOR_API_KEY_TEST_MISSING',
   defaultModel: 'auto',
-  sandbox: true,
-  autoReview: true,
   settingSources: [],
   additionalDirs: [],
   modelCacheMs: 60_000,
+  workspaceScanCacheMs: 300_000,
+  runStallMs: 90_000,
 }
 
 describe('CursorModelAdapter', () => {
@@ -154,6 +154,8 @@ function runtimeWithModels(listModels: CursorRuntime['listModels']): CursorRunti
       throw new Error('not used')
     },
     listModels,
-    createStore: () => ({} as LocalAgentStore),
+    createStore: async () => ({} as LocalAgentStore),
+    configureWorkspaceCache: () => {},
+    prewarm: async () => undefined,
   }
 }

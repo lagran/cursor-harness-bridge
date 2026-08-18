@@ -14,6 +14,7 @@ import {
 import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry, { installModelSelection } from '@deepseek-ai/dsh-agent'
 import { createUserMessage, LlmRuntime } from '@deepseek-ai/dsh-llm'
+import SandboxPolicy, { setSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -32,7 +33,9 @@ afterEach(() => {
 describe('CursorAgentFactory lifecycle', () => {
   it('drives two Harness turns through one durable Cursor agent', async () => {
     const root = mkdtempSync(join(tmpdir(), 'cursor-harness-test-'))
+    const additionalRoot = mkdtempSync(join(tmpdir(), 'cursor-harness-extra-'))
     roots.push(root)
+    roots.push(additionalRoot)
     const runtime = new FakeCursorRuntime()
     const ctx = new Context()
     new AgentRegistry(ctx)
@@ -43,16 +46,20 @@ describe('CursorAgentFactory lifecycle', () => {
       includeRuntimeContext: false,
       persona: '',
     })
+    new SandboxPolicy(ctx, {
+      mode: 'workspace-write',
+      workspaceRoot: process.cwd(),
+    })
 
     const config: Config = {
       apiKeyEnv: 'CURSOR_API_KEY_TEST_MISSING',
       defaultModel: 'auto',
       stateDir: root,
-      sandbox: true,
-      autoReview: true,
       settingSources: [],
-      additionalDirs: [],
+      additionalDirs: [additionalRoot],
       modelCacheMs: 60_000,
+      workspaceScanCacheMs: 300_000,
+      runStallMs: 90_000,
     }
     const catalog = new CursorModelCatalog()
     ctx.llm.registerAdapter(
@@ -88,6 +95,7 @@ describe('CursorAgentFactory lifecycle', () => {
     })
     handle.agent.followup(userMessage('first'))
     await handle.agent.whenIdle()
+    setSandboxMode(handle.agent.session, 'danger-full-access')
     selection.current = { provider: CURSOR_PROVIDER, model: 'grok-4.6' }
     handle.agent.followup(userMessage('second'))
     await handle.agent.whenIdle()
@@ -95,7 +103,7 @@ describe('CursorAgentFactory lifecycle', () => {
     while (runtime.agent.sendCalls < 3 || runtime.agent.lastRun?.started !== true) {
       await new Promise(resolve => setTimeout(resolve, 1))
     }
-    handle.agent.cancel({ kind: 'user' })
+    setSandboxMode(handle.agent.session, 'read-only')
     await handle.agent.whenIdle()
     handle.agent.followup(userMessage('auth-retry'))
     await handle.agent.whenIdle()
@@ -111,12 +119,16 @@ describe('CursorAgentFactory lifecycle', () => {
       'completed',
       'error',
     ])
+    expect(turns[2]?.data.reason).toEqual({
+      kind: 'aborted',
+      reason: { kind: 'hook', reason: 'Harness permission changed' },
+    })
     expect(assistants.map(event => event.data.message.content[0])).toEqual([
       { type: 'text', text: 'reply:first' },
       { type: 'text', text: 'reply:second' },
       { type: 'text', text: 'reply:auth-retry' },
     ])
-    expect(runtime.resumeCalls).toBe(2)
+    expect(runtime.resumeCalls).toBe(4)
     expect(runtime.createCalls).toBe(1)
     expect(runtime.agent.sendCalls).toBe(6)
     expect(runtime.agent.models).toEqual([
@@ -127,10 +139,78 @@ describe('CursorAgentFactory lifecycle', () => {
       'grok-4.6',
       'grok-4.6',
     ])
+    expect(runtime.agent.forces).toEqual([
+      true, true, true, true, true, true,
+    ])
+    expect(runtime.resumeAgentIds).toHaveLength(4)
+    expect(new Set(runtime.resumeAgentIds).size).toBe(1)
+    expect(runtime.resumeOptions[0]).toMatchObject({
+      local: {
+        sandboxOptions: { enabled: true },
+        autoReview: false,
+      },
+    })
+    expect(runtime.resumeOptions[0]?.local?.dirs).toEqual([])
+    expect(runtime.createOptions[0]?.local?.dirs).toEqual([])
+    expect(runtime.resumeOptions[1]).toMatchObject({
+      local: {
+        dirs: [additionalRoot],
+        sandboxOptions: { enabled: false },
+        autoReview: false,
+      },
+    })
+    expect(runtime.resumeOptions[1]?.tools).toBeUndefined()
+    expect(runtime.resumeOptions[2]).toMatchObject({
+      tools: [
+        'read',
+        'grep',
+        'glob',
+        'ls',
+        'readLints',
+        'semSearch',
+        'webSearch',
+        'webFetch',
+      ],
+      local: {
+        dirs: [additionalRoot],
+        sandboxOptions: { enabled: true },
+        autoReview: true,
+      },
+    })
+    expect(runtime.resumeOptions[3]).toMatchObject(runtime.resumeOptions[2] ?? {})
+    expect(runtime.agent.runs.find(run => run.prompt === 'hang')?.cancelCalls).toBe(1)
     expect(runtime.agent.lastRun?.cancelCalls).toBe(1)
+    expect(runtime.prewarmCalls).toBe(3)
+    expect(runtime.prewarmReleases).toBe(2)
+
+    config.runStallMs = 20
+    const sendsBeforeStall = runtime.agent.sendCalls
+    handle.agent.followup(userMessage('stall-empty'))
+    await handle.agent.whenIdle()
+    expect(runtime.agent.sendCalls - sendsBeforeStall).toBe(2)
+    expect(runtime.agent.runs.filter(run => run.prompt === 'stall-empty')).toHaveLength(2)
+    expect(handle.agent.session.events.findLast(
+      event => event.type === 'turn/end',
+    )?.data.reason).toMatchObject({
+      kind: 'error',
+      error: { code: 'CURSOR_RUN_STALLED' },
+    })
+
+    const sendsBeforeToolStall = runtime.agent.sendCalls
+    handle.agent.followup(userMessage('stall-after-tool'))
+    await handle.agent.whenIdle()
+    expect(runtime.agent.sendCalls - sendsBeforeToolStall).toBe(1)
+    expect(runtime.agent.forces.every(force => force === true)).toBe(true)
+    expect(handle.agent.session.events.findLast(
+      event => event.type === 'turn/end',
+    )?.data.reason).toMatchObject({
+      kind: 'error',
+      error: { code: 'CURSOR_RUN_STALLED' },
+    })
 
     await handle.dispose()
     expect(runtime.agent.disposed).toBe(true)
+    expect(runtime.prewarmReleases).toBe(3)
     await factory.dispose()
     await ctx.root.fiber.dispose()
   })
@@ -147,16 +227,24 @@ class FakeCursorRuntime implements CursorRuntime {
   readonly agent = new FakeSdkAgent()
   resumeCalls = 0
   createCalls = 0
+  prewarmCalls = 0
+  prewarmReleases = 0
+  readonly resumeAgentIds: string[] = []
+  readonly resumeOptions: Array<Partial<CursorAgentOptions>> = []
+  readonly createOptions: CursorAgentOptions[] = []
   private created = false
 
-  async create(_options: CursorAgentOptions): Promise<SDKAgent> {
+  async create(options: CursorAgentOptions): Promise<SDKAgent> {
     this.createCalls++
+    this.createOptions.push(options)
     this.created = true
     return this.agent.value
   }
 
-  async resume(_agentId: string, _options: Partial<CursorAgentOptions>): Promise<SDKAgent> {
+  async resume(agentId: string, options: Partial<CursorAgentOptions>): Promise<SDKAgent> {
     this.resumeCalls++
+    this.resumeAgentIds.push(agentId)
+    this.resumeOptions.push(options)
     if (!this.created) throw new AgentNotFoundError('missing')
     return this.agent.value
   }
@@ -168,8 +256,17 @@ class FakeCursorRuntime implements CursorRuntime {
     ]
   }
 
-  createStore(): LocalAgentStore {
+  async createStore(): Promise<LocalAgentStore> {
     return {} as LocalAgentStore
+  }
+
+  configureWorkspaceCache(): void {}
+
+  async prewarm(): Promise<() => Promise<void>> {
+    this.prewarmCalls++
+    return async () => {
+      this.prewarmReleases++
+    }
   }
 }
 
@@ -177,7 +274,9 @@ class FakeSdkAgent {
   sendCalls = 0
   disposed = false
   lastRun: FakeRun | undefined
+  readonly runs: FakeRun[] = []
   models: string[] = []
+  forces: Array<boolean | undefined> = []
   authFailures = 1
 
   readonly value = {
@@ -186,9 +285,11 @@ class FakeSdkAgent {
     send: async (message: string, options?: SendOptions) => {
       this.sendCalls++
       this.models.push(options?.model?.id ?? '')
+      this.forces.push(options?.local?.force)
       const authenticationFailure = message === 'auth-retry'
         && this.authFailures-- > 0
       this.lastRun = new FakeRun(message, options, authenticationFailure)
+      this.runs.push(this.lastRun)
       return this.lastRun as unknown as Run
     },
     close: () => {},
@@ -219,7 +320,7 @@ class FakeRun {
   private readonly released = Promise.withResolvers<void>()
 
   constructor(
-    private readonly prompt: string,
+    readonly prompt: string,
     private readonly options?: SendOptions,
     private readonly authenticationFailure = false,
   ) {}
@@ -234,7 +335,24 @@ class FakeRun {
 
   async * stream(): AsyncGenerator<SDKMessage, void> {
     this.started = true
-    if (this.prompt === 'hang') {
+    if (this.prompt === 'hang' || this.prompt === 'stall-empty') {
+      await this.released.promise
+      return
+    }
+    if (this.prompt === 'stall-after-tool') {
+      yield {
+        type: 'tool_call',
+        agent_id: this.agentId,
+        run_id: this.id,
+        call_id: 'read-before-stall',
+        name: 'read',
+        status: 'completed',
+        args: { path: 'README.md' },
+        result: {
+          status: 'success',
+          value: 'read result',
+        },
+      }
       await this.released.promise
       return
     }

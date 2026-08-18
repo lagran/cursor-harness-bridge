@@ -12,6 +12,20 @@
  * turns scrim taps into close events.
  */
 
+/* This deployment does not show Harness' product-wide testing notice.
+   The companion script immediately completes the step; hiding its portal here
+   prevents a one-frame flash while React processes that completion. */
+body
+  > [role='presentation']:has(
+    > [role='dialog'][aria-label='内测声明'][aria-modal='true']
+  ),
+body
+  > [role='presentation']:has(
+    > [role='dialog'][aria-label='Internal Testing Notice'][aria-modal='true']
+  ) {
+  display: none !important;
+}
+
 .harness-image-upload-button {
   width: 34px;
   height: 34px;
@@ -74,10 +88,11 @@
 
   /* Sidebar open: never let the grid take width from the transcript. */
   .pI_x6G_frame:not([data-sidebar-collapsed]) {
-    grid-template-columns: 56px minmax(0px, 1fr) 0px !important;
+    grid-template-columns: 0 minmax(0px, 1fr) 0 !important;
   }
 
   .pI_x6G_frame:not([data-sidebar-collapsed]) .pI_x6G_sidebarCol {
+    box-sizing: border-box;
     position: fixed;
     top: 0;
     bottom: 0;
@@ -87,17 +102,26 @@
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
     overscroll-behavior: contain;
-    background: var(--dsw-alias-bg-primary, #fff);
+    background: var(--dsw-specific-sidebar-fill, #fff);
     box-shadow: 0 0 40px rgba(12, 16, 24, 0.28);
     animation: harness-side-panel-in 0.24s ease;
   }
 
+  /* Harness keeps the sidebar content at its desktop inline width (280px).
+     Fill the wider mobile sheet so no uncovered band appears at its edge. */
+  .pI_x6G_frame:not([data-sidebar-collapsed])
+    .pI_x6G_sidebarCol
+    > .hHd-Xa_root {
+    width: 100% !important;
+  }
+
   /* Details open: same treatment, sliding in from the right. */
   .pI_x6G_frame:not([data-details-collapsed]) {
-    grid-template-columns: 56px minmax(0px, 1fr) 0px !important;
+    grid-template-columns: 0 minmax(0px, 1fr) 0 !important;
   }
 
   .pI_x6G_frame:not([data-details-collapsed]) .pI_x6G_detailsCol {
+    box-sizing: border-box;
     position: fixed;
     top: 0;
     bottom: 0;
@@ -107,7 +131,7 @@
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
     overscroll-behavior: contain;
-    background: var(--dsw-alias-bg-primary, #fff);
+    background: var(--dsw-alias-bg-layer-1, #fff);
     box-shadow: 0 0 40px rgba(12, 16, 24, 0.28);
     animation: harness-side-panel-in-right 0.24s ease;
   }

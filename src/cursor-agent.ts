@@ -46,12 +46,32 @@ import {
 } from './config.js'
 import type { CursorRuntime } from './cursor-runtime.js'
 import { CursorEventMapper } from './event-mapper.js'
+import type {
+  CursorExecutionPolicy,
+  CursorExecutionPolicyResolver,
+} from './execution-policy.js'
 import type { CursorModelCatalog } from './model-catalog.js'
 
 interface ActiveTurn {
   abort: AbortController
   turn: number
   run: Run | undefined
+}
+
+interface PrewarmState {
+  mode: CursorExecutionPolicy['mode']
+  release: Promise<(() => Promise<void>) | undefined>
+}
+
+export const CURSOR_RUN_STALLED = 'CURSOR_RUN_STALLED'
+
+export class CursorRunStalledError extends Error {
+  readonly code = CURSOR_RUN_STALLED
+
+  constructor(readonly timeoutMs: number) {
+    super(`Cursor run produced no events for ${timeoutMs}ms`)
+    this.name = 'CursorRunStalledError'
+  }
 }
 
 export interface CursorHarnessAgentDependencies {
@@ -65,6 +85,7 @@ export interface CursorHarnessAgentDependencies {
   modelCatalog: CursorModelCatalog
   attachments: AttachmentStore
   resolveApiKey: ApiKeyResolver
+  resolveExecutionPolicy: CursorExecutionPolicyResolver
 }
 
 export class CursorHarnessAgent implements Agent {
@@ -78,6 +99,8 @@ export class CursorHarnessAgent implements Agent {
   private activityDone: Promise<void> = Promise.resolve()
   private cursor: SDKAgent | undefined
   private cursorPromise: Promise<SDKAgent> | undefined
+  private cursorPolicyMode: CursorExecutionPolicy['mode'] | undefined
+  private prewarmState: PrewarmState | undefined
   private disposed = false
   private lastTurn: number
   private requestHeaderLogged = false
@@ -98,6 +121,14 @@ export class CursorHarnessAgent implements Agent {
       inserted: message => this.dispatch.emit('agent/inbox/inserted', { message }),
       discarded: message => this.dispatch.emit('agent/inbox/discarded', { message }),
       claimed: (message, turn) => this.dispatch.emit('agent/inbox/claimed', { message, turn }),
+    })
+    this.ctx.on('session/event', (session, event) => {
+      if (session !== this.session || event.type !== 'sandbox/mode') return
+      this.cancel(
+        { kind: 'hook', reason: 'Harness permission changed' },
+        { keepInbox: true },
+      )
+      this.startPrewarm()
     })
   }
 
@@ -143,6 +174,13 @@ export class CursorHarnessAgent implements Agent {
     } while (observed !== this.activityDone)
   }
 
+  startPrewarm(): void {
+    if (this.disposed) return
+    const config = this.seedRequestConfig()
+    const policy = this.dependencies.resolveExecutionPolicy()
+    void this.ensurePrewarm(config, policy)
+  }
+
   runMaintenance<T>(task: (signal: AbortSignal) => Promise<T>): Promise<T> {
     if (this.active !== undefined) throw new Error(`agent "${this.id}" already has active work`)
     const abort = new AbortController()
@@ -165,6 +203,10 @@ export class CursorHarnessAgent implements Agent {
     await this.whenIdle()
     const cursor = await this.cursorPromise?.catch(() => undefined) ?? this.cursor
     if (cursor !== undefined) await cursor[Symbol.asyncDispose]()
+    const prewarm = this.prewarmState
+    this.prewarmState = undefined
+    const release = await prewarm?.release.catch(() => undefined)
+    await release?.()
   }
 
   private wake(): void {
@@ -237,6 +279,8 @@ export class CursorHarnessAgent implements Agent {
       )
       let result: RunResult
       let authenticationRetries = 0
+      let stallRetries = 0
+      let transportRetries = 0
       while (true) {
         try {
           result = await this.executeCursorRun(
@@ -255,6 +299,30 @@ export class CursorHarnessAgent implements Agent {
             await this.resetCursorAgent()
             this.dependencies.ctx.logger.warn(
               `Cursor authentication state expired for session "${this.id}"; reopened the SDK agent and retrying once`,
+            )
+            continue
+          }
+          if (error instanceof CursorRunStalledError) {
+            const retry = stallRetries === 0 && !mapper.hasRunOutput()
+            await this.resetCursorAgent()
+            if (retry) {
+              stallRetries++
+              this.dependencies.ctx.logger.warn(
+                `Cursor run stalled before producing output for session "${this.id}"; reopened the SDK agent and retrying once`,
+              )
+              continue
+            }
+          }
+          if (
+            error instanceof CursorSdkError
+            && error.isRetryable
+            && transportRetries === 0
+            && !mapper.hasRunOutput()
+          ) {
+            transportRetries++
+            await this.resetCursorAgent()
+            this.dependencies.ctx.logger.warn(
+              `Cursor transport failed before producing output for session "${this.id}"; reopened the SDK agent and retrying once`,
             )
             continue
           }
@@ -312,37 +380,87 @@ export class CursorHarnessAgent implements Agent {
     mapper: CursorEventMapper,
     active: ActiveTurn,
   ): Promise<RunResult> {
+    const startedAt = performance.now()
     const cursor = await this.cursorAgent(config, active.abort.signal)
-    const queue = new MappingQueue()
-    const run = await cursor.send(prompt, {
-      model: this.dependencies.modelCatalog.selection(
-        config.model,
-        config.reasoningEffort,
-      ),
-      onDelta: ({ update }) => queue.push(() => mapper.handleDelta(update)),
-    })
-    active.run = run
-    mapper.setRunMetadata({
-      agentId: run.agentId,
-      runId: run.id,
-      ...(run.requestId === undefined ? {} : { requestId: run.requestId }),
-    })
-    for await (const message of run.stream()) {
-      await queue.push(() => mapper.handleMessage(message))
+    const agentReadyAt = performance.now()
+    const watchdog = new RunActivityWatchdog(this.dependencies.config.runStallMs)
+    let run: Run | undefined
+    let runReadyAt: number | undefined
+    let firstOutputAt: number | undefined
+    let terminalStatus = 'error'
+    const markFirstOutput = (): void => {
+      firstOutputAt ??= performance.now()
     }
-    await queue.drain()
-    const result = await run.wait()
-    active.run = undefined
-    return result
+    try {
+      run = await Promise.race([
+        cursor.send(prompt, {
+          model: this.dependencies.modelCatalog.selection(
+            config.model,
+            config.reasoningEffort,
+          ),
+          local: { force: true },
+          onDelta: ({ update }) => {
+            if (!watchdog.open) return
+            watchdog.touch()
+            markFirstOutput()
+            mapper.handleDelta(update)
+          },
+        }),
+        watchdog.expired,
+      ])
+      runReadyAt = performance.now()
+      active.run = run
+      mapper.setRunMetadata({
+        agentId: run.agentId,
+        runId: run.id,
+        ...(run.requestId === undefined ? {} : { requestId: run.requestId }),
+      })
+      const stream = run.stream()[Symbol.asyncIterator]()
+      while (true) {
+        const next = await Promise.race([stream.next(), watchdog.expired])
+        if (next.done) break
+        watchdog.touch()
+        if (
+          next.value.type !== 'status'
+          && next.value.type !== 'system'
+          && next.value.type !== 'user'
+          && next.value.type !== 'usage'
+        ) {
+          markFirstOutput()
+        }
+        mapper.handleMessage(next.value)
+      }
+      const result = await Promise.race([run.wait(), watchdog.expired])
+      active.run = undefined
+      terminalStatus = result.status
+      return result
+    } catch (error) {
+      if (error instanceof CursorRunStalledError) terminalStatus = 'stalled'
+      if (
+        error instanceof CursorRunStalledError
+        && run?.supports('cancel')
+        && run.status === 'running'
+      ) {
+        await cancelRunBounded(run)
+        active.run = undefined
+      }
+      throw error
+    } finally {
+      watchdog.close()
+      const completedAt = performance.now()
+      this.dependencies.ctx.logger.info(
+        `Cursor run timing session="${this.id}" `
+        + `run="${run?.id ?? 'pending'}" status=${terminalStatus} `
+        + `openMs=${Math.round(agentReadyAt - startedAt)} `
+        + `sendMs=${runReadyAt === undefined ? -1 : Math.round(runReadyAt - agentReadyAt)} `
+        + `firstOutputMs=${firstOutputAt === undefined ? -1 : Math.round(firstOutputAt - startedAt)} `
+        + `totalMs=${Math.round(completedAt - startedAt)}`,
+      )
+    }
   }
 
   private async resolveRequest(turn: number, signal: AbortSignal): Promise<LlmCallConfig> {
-    const previous = this.session.requestHeader()?.config
-    const seed: LlmCallConfig = {
-      provider: previous?.provider || this.options.provider || CURSOR_PROVIDER,
-      model: previous?.model || this.options.model || this.dependencies.config.defaultModel,
-      ...(previous?.reasoningEffort === undefined ? {} : { reasoningEffort: previous.reasoningEffort }),
-    }
+    const seed = this.seedRequestConfig()
     const proposed = await this.dispatch.waterfall(
       'agent/request',
       { turn, step: 1, signal },
@@ -353,6 +471,17 @@ export class CursorHarnessAgent implements Agent {
       throw new Error(`Cursor AgentFactory only supports provider "${CURSOR_PROVIDER}", got "${proposed.provider}"`)
     }
     return this.dependencies.ctx.llm.resolveCallConfig(proposed, signal)
+  }
+
+  private seedRequestConfig(): LlmCallConfig {
+    const previous = this.session.requestHeader()?.config
+    return {
+      provider: previous?.provider || this.options.provider || CURSOR_PROVIDER,
+      model: previous?.model || this.options.model || this.dependencies.config.defaultModel,
+      ...(previous?.reasoningEffort === undefined
+        ? {}
+        : { reasoningEffort: previous.reasoningEffort }),
+    }
   }
 
   private logRequest(config: LlmCallConfig): void {
@@ -375,9 +504,17 @@ export class CursorHarnessAgent implements Agent {
   }
 
   private async cursorAgent(config: LlmCallConfig, signal: AbortSignal): Promise<SDKAgent> {
+    const policy = this.dependencies.resolveExecutionPolicy()
+    if (
+      this.cursor !== undefined
+      && this.cursorPolicyMode !== undefined
+      && this.cursorPolicyMode !== policy.mode
+    ) {
+      await this.resetCursorAgent()
+    }
     if (this.cursor !== undefined) return this.cursor
     if (this.cursorPromise !== undefined) return this.cursorPromise
-    this.cursorPromise = this.openCursorAgent(config, signal)
+    this.cursorPromise = this.openCursorAgent(config, policy, signal)
     try {
       return await this.cursorPromise
     } finally {
@@ -389,17 +526,25 @@ export class CursorHarnessAgent implements Agent {
     const cursor = this.cursor
     this.cursor = undefined
     this.cursorPromise = undefined
+    this.cursorPolicyMode = undefined
     if (cursor !== undefined) {
       await cursor[Symbol.asyncDispose]()
     }
   }
 
-  private async openCursorAgent(config: LlmCallConfig, signal: AbortSignal): Promise<SDKAgent> {
+  private async openCursorAgent(
+    config: LlmCallConfig,
+    policy: CursorExecutionPolicy,
+    signal: AbortSignal,
+  ): Promise<SDKAgent> {
+    signal.throwIfAborted()
+    await this.ensurePrewarm(config, policy)
     signal.throwIfAborted()
     const cursorId = deterministicCursorId(this.id)
-    const options = await this.cursorOptions(config)
+    const options = await this.cursorOptions(config, policy)
+    let cursor: SDKAgent
     try {
-      this.cursor = await this.dependencies.runtime.resume(cursorId, options)
+      cursor = await this.dependencies.runtime.resume(cursorId, options)
     } catch (error) {
       if (!isAgentMissing(error)) throw error
       const hasCursorHistory = this.session.events.some(event => event.type === 'assistant/message')
@@ -409,17 +554,72 @@ export class CursorHarnessAgent implements Agent {
           { cause: error },
         )
       }
-      this.cursor = await this.dependencies.runtime.create({
+      cursor = await this.dependencies.runtime.create({
         ...options,
         agentId: cursorId,
         name: `DeepSeek Harness ${String(this.id).slice(0, 12)}`,
       })
     }
-    signal.throwIfAborted()
-    return this.cursor
+    try {
+      signal.throwIfAborted()
+    } catch (error) {
+      await cursor[Symbol.asyncDispose]().catch(disposeError => {
+        this.dependencies.ctx.logger.warn(
+          `Cursor agent cleanup after permission change failed: ${errorMessage(disposeError)}`,
+        )
+      })
+      throw error
+    }
+    this.cursor = cursor
+    this.cursorPolicyMode = policy.mode
+    return cursor
   }
 
-  private async cursorOptions(config: LlmCallConfig): Promise<CursorSdkAgentOptions> {
+  private async ensurePrewarm(
+    config: LlmCallConfig,
+    policy: CursorExecutionPolicy,
+  ): Promise<void> {
+    const current = this.prewarmState
+    if (current?.mode === policy.mode) {
+      const release = await current.release
+      if (release !== undefined || this.prewarmState !== current) return
+      this.prewarmState = undefined
+    }
+
+    const previous = this.prewarmState
+    const state: PrewarmState = {
+      mode: policy.mode,
+      release: Promise.resolve(undefined),
+    }
+    state.release = (async () => {
+      const previousRelease = await previous?.release.catch(() => undefined)
+      await previousRelease?.()
+      if (this.disposed) return undefined
+      try {
+        const startedAt = performance.now()
+        const options = await this.cursorOptions(config, policy)
+        if (this.disposed) return undefined
+        const release = await this.dependencies.runtime.prewarm(options)
+        this.dependencies.ctx.logger.info(
+          `Cursor workspace prewarmed cwd="${this.session.header.cwd}" `
+          + `mode=${policy.mode} elapsedMs=${Math.round(performance.now() - startedAt)}`,
+        )
+        return release
+      } catch (error) {
+        this.dependencies.ctx.logger.warn(
+          `Cursor workspace prewarm failed for "${this.session.header.cwd}": ${errorMessage(error)}`,
+        )
+        return undefined
+      }
+    })()
+    this.prewarmState = state
+    await state.release
+  }
+
+  private async cursorOptions(
+    config: LlmCallConfig,
+    policy: CursorExecutionPolicy,
+  ): Promise<CursorSdkAgentOptions> {
     const apiKey = await this.dependencies.resolveApiKey()
     return {
       ...(apiKey === undefined ? {} : { apiKey }),
@@ -427,15 +627,19 @@ export class CursorHarnessAgent implements Agent {
         config.model,
         config.reasoningEffort,
       ),
+      ...(policy.tools === undefined ? {} : { tools: [...policy.tools] }),
       local: {
         cwd: this.session.header.cwd || process.cwd(),
-        ...(this.dependencies.config.additionalDirs.length === 0
-          ? {}
-          : { dirs: this.dependencies.config.additionalDirs }),
+        ...(policy.includeAdditionalDirs
+          ? (this.dependencies.config.additionalDirs.length === 0
+              ? {}
+              : { dirs: this.dependencies.config.additionalDirs })
+          : { dirs: [] }),
         store: this.dependencies.store,
-        sandboxOptions: { enabled: this.dependencies.config.sandbox },
-        autoReview: this.dependencies.config.autoReview,
+        sandboxOptions: { enabled: policy.sandboxEnabled },
+        autoReview: policy.autoReview,
         settingSources: this.dependencies.config.settingSources,
+        enableAgentRetries: false,
       },
     }
   }
@@ -447,17 +651,53 @@ export class CursorHarnessAgent implements Agent {
   }
 }
 
-class MappingQueue {
-  private pending: Promise<void> = Promise.resolve()
+class RunActivityWatchdog {
+  readonly expired: Promise<never>
+  open = true
+  private timer: NodeJS.Timeout | undefined
+  private readonly reject: (reason?: unknown) => void
 
-  push(operation: () => void): Promise<void> {
-    const next = this.pending.then(operation)
-    this.pending = next
-    return next
+  constructor(private readonly timeoutMs: number) {
+    const deferred = Promise.withResolvers<never>()
+    this.expired = deferred.promise
+    this.reject = deferred.reject
+    this.arm()
   }
 
-  drain(): Promise<void> {
-    return this.pending
+  touch(): void {
+    if (!this.open) return
+    this.arm()
+  }
+
+  close(): void {
+    this.open = false
+    if (this.timer !== undefined) clearTimeout(this.timer)
+    this.timer = undefined
+  }
+
+  private arm(): void {
+    if (this.timer !== undefined) clearTimeout(this.timer)
+    this.timer = setTimeout(() => {
+      this.open = false
+      this.timer = undefined
+      this.reject(new CursorRunStalledError(this.timeoutMs))
+    }, this.timeoutMs)
+    this.timer.unref()
+  }
+}
+
+async function cancelRunBounded(run: Run): Promise<void> {
+  let timer: NodeJS.Timeout | undefined
+  try {
+    await Promise.race([
+      run.cancel().catch(() => undefined),
+      new Promise<void>(resolve => {
+        timer = setTimeout(resolve, 5_000)
+        timer.unref()
+      }),
+    ])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
   }
 }
 
@@ -545,6 +785,12 @@ function isAuthenticationFailure(error: unknown): boolean {
 }
 
 function cursorFailure(error: unknown): LlmFailure {
+  if (error instanceof CursorRunStalledError) {
+    return {
+      message: error.message,
+      code: CURSOR_RUN_STALLED,
+    }
+  }
   if (error instanceof CursorSdkError) {
     return {
       message: error.message,

@@ -1,5 +1,5 @@
 import { mkdirSync } from 'node:fs'
-import type { LocalAgentStore } from '@cursor/sdk'
+import { resolve } from 'node:path'
 import {
   emitAgentEvent,
   type AgentFactory,
@@ -11,6 +11,7 @@ import {
   type SessionStartSource,
 } from '@deepseek-ai/dsh-agent'
 import type { Context } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/dsh-sandbox-policy'
 import {
   SessionPreparation,
   type Session,
@@ -23,13 +24,24 @@ import {
   resolveStateDir,
 } from './config.js'
 import { CursorHarnessAgent } from './cursor-agent.js'
+import { cursorExecutionPolicy } from './execution-policy.js'
 import type { CursorModelCatalog } from './model-catalog.js'
-import type { CursorRuntime } from './cursor-runtime.js'
+import type {
+  CursorRuntime,
+  ManagedLocalAgentStore,
+} from './cursor-runtime.js'
+import {
+  migrateJsonlStores,
+  sqliteWorkspaceRoot,
+} from './store-migration.js'
 
 export class CursorAgentFactory implements AgentFactory {
-  private readonly store: LocalAgentStore
+  private readonly stateDir: string
+  private readonly stores = new Map<string, Promise<ManagedLocalAgentStore>>()
+  private readonly ready: Promise<void>
   private readonly shutdown = new AbortController()
   private readonly handles = new Set<() => Promise<void>>()
+  private disposePromise: Promise<void> | undefined
   private stopped = false
 
   constructor(
@@ -39,9 +51,15 @@ export class CursorAgentFactory implements AgentFactory {
     private readonly modelCatalog: CursorModelCatalog,
     private readonly resolveApiKey: ApiKeyResolver,
   ) {
-    const stateDir = resolveStateDir(config)
-    mkdirSync(stateDir, { recursive: true, mode: 0o700 })
-    this.store = runtime.createStore(stateDir)
+    this.stateDir = resolveStateDir(config)
+    mkdirSync(this.stateDir, { recursive: true, mode: 0o700 })
+    this.ready = migrateJsonlStores({
+      stateDir: this.stateDir,
+      openStore: workspaceRef => this.storeFor(workspaceRef),
+      logger: {
+        info: message => this.ctx.logger.info(message),
+      },
+    }).then(() => undefined)
   }
 
   async createAgent(ownerCtx: Context, options: CreateAgentOptions): Promise<AgentHandle> {
@@ -90,13 +108,21 @@ export class CursorAgentFactory implements AgentFactory {
   }
 
   async dispose(): Promise<void> {
-    if (this.stopped) {
-      await Promise.allSettled([...this.handles].map(dispose => dispose()))
-      return
-    }
+    this.disposePromise ??= this.disposeOnce()
+    await this.disposePromise
+  }
+
+  private async disposeOnce(): Promise<void> {
     this.stopped = true
     this.shutdown.abort(new Error('Cursor AgentFactory disposed'))
     await Promise.allSettled([...this.handles].map(dispose => dispose()))
+    await this.ready.catch(() => undefined)
+    const stores = await Promise.allSettled(this.stores.values())
+    await Promise.allSettled(
+      stores.flatMap(result => result.status === 'fulfilled' && result.value.dispose !== undefined
+        ? [result.value.dispose()]
+        : []),
+    )
   }
 
   private async setupAndPublish(
@@ -115,6 +141,11 @@ export class CursorAgentFactory implements AgentFactory {
       ...(callerSignal === undefined ? [] : [callerSignal]),
     ])
     signal.throwIfAborted()
+    await this.ready
+    signal.throwIfAborted()
+    const workspaceRef = resolve(session.header.cwd || process.cwd())
+    const store = await this.storeFor(workspaceRef)
+    signal.throwIfAborted()
 
     const agent = new CursorHarnessAgent({
       ctx: this.ctx,
@@ -123,10 +154,13 @@ export class CursorAgentFactory implements AgentFactory {
       session,
       config: this.config,
       runtime: this.runtime,
-      store: this.store,
+      store,
       modelCatalog: this.modelCatalog,
       attachments: this.ctx.attachments,
       resolveApiKey: this.resolveApiKey,
+      resolveExecutionPolicy: () => cursorExecutionPolicy(
+        this.ctx.sandboxPolicy.resolve({ session }).mode,
+      ),
     })
     let detachSession: (() => void) | undefined
     let detachAgent: (() => void) | undefined
@@ -169,6 +203,7 @@ export class CursorAgentFactory implements AgentFactory {
       agent.ctx.sessions.announce(session)
       this.ctx.agents.announce(agent)
       emitAgentEvent(this.ctx, agent, 'agent/session-start', { source })
+      agent.startPrewarm()
       signal.throwIfAborted()
 
       return {
@@ -183,5 +218,18 @@ export class CursorAgentFactory implements AgentFactory {
       await ownerCleanup?.()
       throw error
     }
+  }
+
+  private storeFor(workspaceRef: string): Promise<ManagedLocalAgentStore> {
+    const identity = resolve(workspaceRef)
+    let store = this.stores.get(identity)
+    if (store === undefined) {
+      store = this.runtime.createStore(
+        sqliteWorkspaceRoot(this.stateDir, identity),
+        identity,
+      )
+      this.stores.set(identity, store)
+    }
+    return store
   }
 }

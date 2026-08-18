@@ -1,4 +1,5 @@
 import os
+import re
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
@@ -25,6 +26,7 @@ def main() -> None:
         continue_button = page.get_by_role("button", name="Continue")
         if continue_button.is_visible():
             continue_button.click()
+            page.get_by_role("dialog").wait_for(state="hidden")
 
         workspace = Path(
             os.environ.get(
@@ -38,11 +40,21 @@ def main() -> None:
             page.get_by_text(workspace.name, exact=True).click()
             page.get_by_role("button", name="Open").click()
 
-        page.get_by_text("Cursor Auto", exact=True).wait_for(timeout=10_000)
+        page.get_by_role("button", name="New Session").first.wait_for(timeout=10_000)
+        permission = page.get_by_text(
+            re.compile(r"^(Read Only|Workspace Write|Full access)$"),
+            exact=True,
+        ).first
+        permission.wait_for(timeout=10_000)
+        permission.click()
+        for label in ("Read Only", "Workspace Write", "Full access"):
+            page.get_by_text(label, exact=True).last.wait_for(timeout=5_000)
+        page.keyboard.press("Escape")
+
         body = page.locator("body").inner_text()
         assert body.strip(), "Harness rendered an empty page"
         assert workspace.name in body, body[:1000]
-        assert "Cursor Auto" in body, body[:1000]
+        assert "Cursor" in body, body[:1000]
         page.screenshot(path="/tmp/cursor-harness-smoke.png", full_page=True)
 
         fatal = [

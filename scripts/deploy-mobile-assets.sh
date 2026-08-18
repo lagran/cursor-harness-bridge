@@ -108,13 +108,14 @@ backup_file() {
 if [[ "${PATCH_CONTAINER}" -eq 1 ]]; then
   echo "== copying assets into ${CONTAINER} =="
   docker exec "${CONTAINER}" sh -c 'mkdir -p /etc/nginx/harness-icons'
+  docker cp "${BRIDGE_DIR}/deploy/harness-mobile.css" "${CONTAINER}:/etc/nginx/harness-mobile.css"
   docker cp "${BRIDGE_DIR}/deploy/harness-mobile-nav.js" "${CONTAINER}:/etc/nginx/harness-mobile-nav.js"
   docker cp "${BRIDGE_DIR}/deploy/harness-manifest.webmanifest" "${CONTAINER}:/etc/nginx/harness-manifest.webmanifest"
   docker cp "${BRIDGE_DIR}/deploy/harness-icons/." "${CONTAINER}:/etc/nginx/harness-icons/"
 
   # docker cp preserves restrictive source modes; Nginx workers need read access.
   docker exec "${CONTAINER}" sh -c \
-    'chmod 644 /etc/nginx/harness-mobile-nav.js /etc/nginx/harness-manifest.webmanifest /etc/nginx/harness-icons/*'
+    'chmod 644 /etc/nginx/harness-mobile.css /etc/nginx/harness-mobile-nav.js /etc/nginx/harness-manifest.webmanifest /etc/nginx/harness-icons/*'
 
   echo "== patching rendered nginx.conf inside the container =="
   docker exec "${CONTAINER}" cat /etc/nginx/nginx.conf >"/tmp/harness-nginx.conf.$$"
