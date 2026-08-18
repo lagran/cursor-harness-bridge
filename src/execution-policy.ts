@@ -17,11 +17,16 @@ export const READ_ONLY_TOOLS = [
   'webFetch',
 ] as const satisfies readonly ToolName[]
 
+export const HEADLESS_DISALLOWED_TOOLS = [
+  'delete',
+] as const satisfies readonly ToolName[]
+
 export interface CursorExecutionPolicy {
   mode: SandboxMode
   sandboxEnabled: boolean
   autoReview: boolean
   tools?: readonly ToolName[]
+  disallowedTools?: readonly ToolName[]
   includeAdditionalDirs: boolean
 }
 
@@ -46,6 +51,7 @@ export function cursorExecutionPolicy(mode: SandboxMode): CursorExecutionPolicy 
         // allow an unsandboxed retry. Sandbox-only execution is required for
         // Harness Workspace Write to remain a hard filesystem boundary.
         autoReview: false,
+        disallowedTools: HEADLESS_DISALLOWED_TOOLS,
         includeAdditionalDirs: false,
       }
     case 'danger-full-access':
@@ -53,6 +59,7 @@ export function cursorExecutionPolicy(mode: SandboxMode): CursorExecutionPolicy 
         mode,
         sandboxEnabled: false,
         autoReview: false,
+        disallowedTools: HEADLESS_DISALLOWED_TOOLS,
         includeAdditionalDirs: true,
       }
   }

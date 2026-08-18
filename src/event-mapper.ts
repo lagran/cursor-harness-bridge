@@ -15,6 +15,22 @@ import {
 import type { Session, UserMessage } from '@deepseek-ai/dsh-session'
 
 const MAX_TOOL_PAYLOAD_CHARS = 50_000
+const READ_ONLY_TOOL_NAMES = new Set([
+  'read',
+  'read_file',
+  'grep',
+  'grep_search',
+  'glob',
+  'ls',
+  'readlints',
+  'semsearch',
+  'semantic_search',
+  'websearch',
+  'web_search',
+  'webfetch',
+  'web_fetch',
+  'readtodos',
+])
 
 interface StepState {
   number: number
@@ -33,6 +49,7 @@ interface ToolState {
   id: ReturnType<typeof CallId>
   name: string
   arguments: string
+  step: number
   callLogged: boolean
   resultLogged: boolean
 }
@@ -146,6 +163,7 @@ export class CursorEventMapper {
 
   finish(usage?: CursorTokenUsage): void {
     if (usage !== undefined) this.usage = cursorUsage(usage)
+    this.settleIncompleteTools('finished')
     const step = this.current()
     if (!step.assistantLogged) this.finalizeAssistant(this.usage)
     this.closeStep()
@@ -153,6 +171,7 @@ export class CursorEventMapper {
 
   abort(): void {
     if (this.step === undefined) return
+    this.settleIncompleteTools('aborted')
     const step = this.step
     if (!step.assistantLogged && (step.text || step.reasoning || step.pendingAssistant !== undefined)) {
       this.finalizeAssistant()
@@ -162,7 +181,10 @@ export class CursorEventMapper {
 
   private handleAssistant(message: SDKAssistantMessage): void {
     const step = this.current()
-    if (step.assistantLogged) this.advanceStep()
+    if (step.assistantLogged) {
+      this.settleIncompleteTools('finished', step.number)
+      this.advanceStep()
+    }
     this.current().pendingAssistant = message
     const hasTools = message.message.content.some(block => block.type === 'tool_use')
     if (hasTools) this.finalizeAssistant()
@@ -176,6 +198,7 @@ export class CursorEventMapper {
         id: CallId(message.call_id),
         name: message.name || 'cursor_tool',
         arguments: safeJson(message.args),
+        step: step.number,
         callLogged: false,
         resultLogged: false,
       }
@@ -198,7 +221,7 @@ export class CursorEventMapper {
     if (!tool.callLogged) {
       this.session.append('tool/call', {
         turn: this.turn,
-        step: this.current().number,
+        step: tool.step,
         callId: tool.id,
         name: tool.name,
         arguments: tool.arguments,
@@ -210,7 +233,7 @@ export class CursorEventMapper {
     const resultText = toolResultText(message)
     this.session.append('tool/result', {
       turn: this.turn,
-      step: this.current().number,
+      step: tool.step,
       message: createToolResultMessage({
         callId: tool.id,
         content: [{ type: 'text', text: resultText }],
@@ -221,6 +244,52 @@ export class CursorEventMapper {
         : {}),
     }, { surfaceOp: 'append' })
     tool.resultLogged = true
+  }
+
+  private settleIncompleteTools(
+    reason: 'finished' | 'aborted',
+    stepNumber?: number,
+  ): void {
+    for (const tool of this.tools.values()) {
+      if (
+        !tool.callLogged
+        || tool.resultLogged
+        || (stepNumber !== undefined && tool.step !== stepNumber)
+      ) continue
+      const aborted = reason === 'aborted'
+      const neutral = !aborted && READ_ONLY_TOOL_NAMES.has(tool.name.toLowerCase())
+      this.session.append('tool/result', {
+        turn: this.turn,
+        step: tool.step,
+        message: createToolResultMessage({
+          callId: tool.id,
+          content: [{
+            type: 'text',
+            text: neutral
+              ? `Cursor run completed without a separate terminal event for read-only tool "${tool.name}"; the card was closed without marking the run as failed.`
+              : aborted
+                ? `Cursor run was interrupted before "${tool.name}" returned a result.`
+                : `Cursor run ended before "${tool.name}" returned a terminal result; the operation may not have completed.`,
+          }],
+          isError: !neutral,
+        }),
+        ...(neutral
+          ? {
+              meta: {
+                synthetic: true,
+                terminalEvent: 'missing',
+                disposition: 'neutral-read-only',
+              },
+            }
+          : {
+              error: {
+                name: aborted ? 'CursorToolCancelledError' : 'CursorToolIncompleteError',
+                code: aborted ? 'CURSOR_TOOL_CANCELLED' : 'CURSOR_TOOL_INCOMPLETE',
+              },
+            }),
+      }, { surfaceOp: 'append' })
+      tool.resultLogged = true
+    }
   }
 
   private appendText(text: string): void {
@@ -262,6 +331,7 @@ export class CursorEventMapper {
   private ensureWritableStep(): StepState {
     const step = this.current()
     if (step.assistantLogged) {
+      this.settleIncompleteTools('finished', step.number)
       this.advanceStep()
       return this.current()
     }

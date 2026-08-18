@@ -11,6 +11,7 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
+  HEADLESS_DISALLOWED_TOOLS,
   READ_ONLY_TOOLS,
   cursorExecutionPolicy,
 } from '../src/execution-policy.js'
@@ -29,6 +30,7 @@ describe('Cursor execution policy', () => {
       mode: 'workspace-write',
       sandboxEnabled: true,
       autoReview: false,
+      disallowedTools: HEADLESS_DISALLOWED_TOOLS,
       includeAdditionalDirs: false,
     })
   })
@@ -45,6 +47,7 @@ describe('Cursor execution policy', () => {
       mode: 'danger-full-access',
       sandboxEnabled: false,
       autoReview: false,
+      disallowedTools: HEADLESS_DISALLOWED_TOOLS,
       includeAdditionalDirs: true,
     })
   })

@@ -269,11 +269,14 @@ session:
   search, lint, and web-read tools. Shell, edits, deletes, MCP, subagents, and
   image generation are unavailable.
 - `Workspace Write` enables Cursor Sandbox without Auto-review and keeps the
-  standard toolset. Only the session's primary workspace is passed as a
-  writable root; commands that need unsandboxed access fail instead of being
-  sent to a classifier that could allow them.
+  standard toolset except Cursor's approval-gated built-in `delete`. File
+  deletion is routed to sandboxed shell `rm` instead. Only the session's
+  primary workspace is passed as a writable root; commands that need
+  unsandboxed access fail instead of being sent to a classifier that could
+  allow them.
 - `Full Access` disables Cursor Sandbox and Auto-review and uses the SDK's
-  unrestricted headless default toolset.
+  unrestricted headless toolset. The approval-gated built-in `delete` remains
+  hidden and explicit deletions are routed to unrestricted shell instead.
 
 Changing the permission while a run is active cancels that run immediately.
 The next turn resumes the same durable Cursor agent with the new policy, so
@@ -307,6 +310,11 @@ ends the turn with an explicit error instead of hanging.
 - A run with no SDK delta or message for 90 seconds is cancelled. The bridge
   retries once only when the attempt produced no output or tool call; otherwise
   it fails with `CURSOR_RUN_STALLED` to avoid repeating side effects.
+- If Cursor finishes or aborts without a terminal event for a started tool,
+  the bridge emits an explicit incomplete/cancelled result so its UI card
+  cannot remain stuck in a running state. Successfully finished read-only
+  checks close neutrally; mutating tools with an unknown outcome and aborted
+  tools remain errors.
 - `CURSOR_WORKSPACE_SCAN_CACHE_MS` and `CURSOR_RUN_STALL_MS` override the two
   defaults. Cursor's own unbounded transport/stall retry is disabled.
 

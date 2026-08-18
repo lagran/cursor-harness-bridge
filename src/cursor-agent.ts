@@ -272,11 +272,15 @@ export class CursorHarnessAgent implements Agent {
       mapper.begin(decision.messages)
       this.logRequest(config)
 
-      const prompt = await buildCursorMessage(
-        decision.messages,
-        this.dependencies.attachments,
-        abort.signal,
+      const prompt = applyExecutionPolicyGuidance(
+        await buildCursorMessage(
+          decision.messages,
+          this.dependencies.attachments,
+          abort.signal,
+        ),
+        this.dependencies.resolveExecutionPolicy(),
       )
+      abort.signal.throwIfAborted()
       let result: RunResult
       let authenticationRetries = 0
       let stallRetries = 0
@@ -628,6 +632,9 @@ export class CursorHarnessAgent implements Agent {
         config.reasoningEffort,
       ),
       ...(policy.tools === undefined ? {} : { tools: [...policy.tools] }),
+      ...(policy.disallowedTools === undefined
+        ? {}
+        : { disallowedTools: [...policy.disallowedTools] }),
       local: {
         cwd: this.session.header.cwd || process.cwd(),
         ...(policy.includeAdditionalDirs
@@ -704,6 +711,51 @@ async function cancelRunBounded(run: Run): Promise<void> {
 function deterministicCursorId(sessionId: SessionId): string {
   const digest = createHash('sha256').update(String(sessionId)).digest('hex').slice(0, 32)
   return `agent-dsh-${digest}`
+}
+
+const WORKSPACE_WRITE_GUIDANCE = [
+  '<cursor_harness_execution_policy>',
+  'Harness Workspace Write is active.',
+  'The built-in delete tool is intentionally unavailable because Cursor Headless cannot approve it.',
+  'When the user requests deletion inside the current workspace, use the sandboxed shell tool instead.',
+  'Shell-quote every path and use `rm -- <path>` for files; use recursive deletion only when the user explicitly requests a directory deletion.',
+  'Do not claim deletion is unavailable merely because the delete tool is absent, and never attempt deletion outside the workspace.',
+  '</cursor_harness_execution_policy>',
+].join('\n')
+
+const READ_ONLY_GUIDANCE = [
+  '<cursor_harness_execution_policy>',
+  'Harness Read Only is active.',
+  'You cannot create, modify, or delete files in this mode.',
+  'When the user requests a filesystem mutation, do not claim that it is underway and do not repeatedly probe for a file you cannot create.',
+  'Explain the limitation immediately and ask the user to switch the session to Workspace Write.',
+  '</cursor_harness_execution_policy>',
+].join('\n')
+
+const FULL_ACCESS_GUIDANCE = [
+  '<cursor_harness_execution_policy>',
+  'Harness Full Access is active.',
+  'This current policy supersedes every earlier Read Only or Workspace Write instruction retained in the conversation.',
+  'Cursor Sandbox and Auto-review are disabled, so operations outside the workspace are allowed when the user explicitly requests them.',
+  'Do not refuse an operation solely because its path is outside the workspace.',
+  'The approval-gated built-in delete tool is intentionally unavailable; use the shell tool for an explicitly requested deletion and shell-quote the exact path.',
+  '</cursor_harness_execution_policy>',
+].join('\n')
+
+export function applyExecutionPolicyGuidance(
+  prompt: string | SDKUserMessage,
+  policy: CursorExecutionPolicy,
+): string | SDKUserMessage {
+  const guidance = policy.mode === 'workspace-write'
+    ? WORKSPACE_WRITE_GUIDANCE
+    : policy.mode === 'read-only'
+      ? READ_ONLY_GUIDANCE
+      : policy.mode === 'danger-full-access'
+        ? FULL_ACCESS_GUIDANCE
+        : undefined
+  if (guidance === undefined) return prompt
+  const text = `${guidance}\n\n${typeof prompt === 'string' ? prompt : prompt.text}`
+  return typeof prompt === 'string' ? text : { ...prompt, text }
 }
 
 export async function buildCursorMessage(

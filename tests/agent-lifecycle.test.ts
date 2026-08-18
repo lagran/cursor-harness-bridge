@@ -9,6 +9,7 @@ import {
   type RunResult,
   type SDKAgent,
   type SDKMessage,
+  type SDKUserMessage,
   type SendOptions,
 } from '@cursor/sdk'
 import { Context } from '@deepseek-ai/cordis'
@@ -142,9 +143,15 @@ describe('CursorAgentFactory lifecycle', () => {
     expect(runtime.agent.forces).toEqual([
       true, true, true, true, true, true,
     ])
+    expect(String(
+      typeof runtime.agent.rawPrompts[0] === 'string'
+        ? runtime.agent.rawPrompts[0]
+        : runtime.agent.rawPrompts[0]?.text,
+    )).toContain('built-in delete tool is intentionally unavailable')
     expect(runtime.resumeAgentIds).toHaveLength(4)
     expect(new Set(runtime.resumeAgentIds).size).toBe(1)
     expect(runtime.resumeOptions[0]).toMatchObject({
+      disallowedTools: ['delete'],
       local: {
         sandboxOptions: { enabled: true },
         autoReview: false,
@@ -153,6 +160,7 @@ describe('CursorAgentFactory lifecycle', () => {
     expect(runtime.resumeOptions[0]?.local?.dirs).toEqual([])
     expect(runtime.createOptions[0]?.local?.dirs).toEqual([])
     expect(runtime.resumeOptions[1]).toMatchObject({
+      disallowedTools: ['delete'],
       local: {
         dirs: [additionalRoot],
         sandboxOptions: { enabled: false },
@@ -160,6 +168,11 @@ describe('CursorAgentFactory lifecycle', () => {
       },
     })
     expect(runtime.resumeOptions[1]?.tools).toBeUndefined()
+    expect(String(
+      typeof runtime.agent.rawPrompts[1] === 'string'
+        ? runtime.agent.rawPrompts[1]
+        : runtime.agent.rawPrompts[1]?.text,
+    )).toContain('Harness Full Access is active')
     expect(runtime.resumeOptions[2]).toMatchObject({
       tools: [
         'read',
@@ -223,6 +236,13 @@ function userMessage(text: string) {
   })
 }
 
+function originalPrompt(message: string | SDKUserMessage): string {
+  const text = typeof message === 'string' ? message : message.text
+  const marker = '</cursor_harness_execution_policy>\n\n'
+  const markerIndex = text.indexOf(marker)
+  return markerIndex === -1 ? text : text.slice(markerIndex + marker.length)
+}
+
 class FakeCursorRuntime implements CursorRuntime {
   readonly agent = new FakeSdkAgent()
   resumeCalls = 0
@@ -277,18 +297,21 @@ class FakeSdkAgent {
   readonly runs: FakeRun[] = []
   models: string[] = []
   forces: Array<boolean | undefined> = []
+  rawPrompts: Array<string | SDKUserMessage> = []
   authFailures = 1
 
   readonly value = {
     agentId: 'agent-fake',
     model: { id: 'auto' },
-    send: async (message: string, options?: SendOptions) => {
+    send: async (message: string | SDKUserMessage, options?: SendOptions) => {
       this.sendCalls++
+      this.rawPrompts.push(message)
       this.models.push(options?.model?.id ?? '')
       this.forces.push(options?.local?.force)
-      const authenticationFailure = message === 'auth-retry'
+      const normalized = originalPrompt(message)
+      const authenticationFailure = normalized === 'auth-retry'
         && this.authFailures-- > 0
-      this.lastRun = new FakeRun(message, options, authenticationFailure)
+      this.lastRun = new FakeRun(normalized, options, authenticationFailure)
       this.runs.push(this.lastRun)
       return this.lastRun as unknown as Run
     },

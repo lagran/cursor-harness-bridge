@@ -119,6 +119,84 @@ describe('CursorEventMapper', () => {
     })
   })
 
+  it('closes an incomplete read-only tool neutrally when the run finishes', () => {
+    const { session, mapper } = createMapper()
+    mapper.handleMessage({
+      type: 'tool_call',
+      agent_id: 'agent-1',
+      run_id: 'run-1',
+      call_id: 'call-incomplete',
+      name: 'read',
+      status: 'running',
+      args: { path: 'missing.txt' },
+    })
+    mapper.handleDelta({ type: 'text-delta', text: 'The file is unavailable.' })
+    mapper.finish()
+
+    const results = session.events.filter(event => event.type === 'tool/result')
+    expect(results).toHaveLength(1)
+    expect(results[0]?.data.error).toBeUndefined()
+    expect(results[0]?.data.meta).toEqual({
+      synthetic: true,
+      terminalEvent: 'missing',
+      disposition: 'neutral-read-only',
+    })
+    expect(results[0]?.data.message.content[0]).toMatchObject({
+      type: 'tool-result',
+      toolCallId: 'call-incomplete',
+      isError: false,
+    })
+    expect(results[0]?.data.step).toBe(1)
+    expect(session.events.indexOf(results[0]!)).toBeLessThan(
+      session.events.findIndex(event =>
+        event.type === 'step/end' && event.data.step === 1),
+    )
+    expect(session.events.findLast(
+      event => event.type === 'assistant/message',
+    )?.data.message.content).toContainEqual({
+      type: 'text',
+      text: 'The file is unavailable.',
+    })
+  })
+
+  it('keeps incomplete mutating tools red on finish and all tools red on abort', () => {
+    const finished = createMapper()
+    finished.mapper.handleMessage({
+      type: 'tool_call',
+      agent_id: 'agent-1',
+      run_id: 'run-1',
+      call_id: 'edit-incomplete',
+      name: 'edit',
+      status: 'running',
+      args: { path: 'file.txt' },
+    })
+    finished.mapper.finish()
+    expect(finished.session.events.find(
+      event => event.type === 'tool/result',
+    )?.data.error).toEqual({
+      name: 'CursorToolIncompleteError',
+      code: 'CURSOR_TOOL_INCOMPLETE',
+    })
+
+    const aborted = createMapper()
+    aborted.mapper.handleMessage({
+      type: 'tool_call',
+      agent_id: 'agent-1',
+      run_id: 'run-1',
+      call_id: 'read-cancelled',
+      name: 'read',
+      status: 'running',
+      args: { path: 'file.txt' },
+    })
+    aborted.mapper.abort()
+    expect(aborted.session.events.find(
+      event => event.type === 'tool/result',
+    )?.data.error).toEqual({
+      name: 'CursorToolCancelledError',
+      code: 'CURSOR_TOOL_CANCELLED',
+    })
+  })
+
   it('fails explicitly when Cursor asks for unsupported interactive input', () => {
     const { mapper } = createMapper()
     expect(() => mapper.handleMessage({

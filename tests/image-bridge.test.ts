@@ -1,7 +1,11 @@
 import { AttachmentId, type ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { describe, expect, it, vi } from 'vitest'
-import { buildCursorMessage } from '../src/cursor-agent.js'
+import {
+  applyExecutionPolicyGuidance,
+  buildCursorMessage,
+} from '../src/cursor-agent.js'
+import { cursorExecutionPolicy } from '../src/execution-policy.js'
 
 describe('buildCursorMessage', () => {
   it('keeps text-only prompts as strings', async () => {
@@ -83,6 +87,48 @@ describe('buildCursorMessage', () => {
     expect(typeof result === 'string' ? result : result.text).toContain(
       '[Context 2]\nCompare these.',
     )
+  })
+})
+
+describe('applyExecutionPolicyGuidance', () => {
+  it('directs Workspace Write deletions to sandboxed shell without losing images', () => {
+    const prompt = {
+      text: 'Delete test_example.py',
+      images: [{ data: 'AA==', mimeType: 'image/png' }],
+    }
+    const result = applyExecutionPolicyGuidance(
+      prompt,
+      cursorExecutionPolicy('workspace-write'),
+    )
+
+    expect(result).toMatchObject({ images: prompt.images })
+    expect(typeof result === 'string' ? result : result.text).toContain(
+      'use the sandboxed shell tool instead',
+    )
+    expect(typeof result === 'string' ? result : result.text).toContain(
+      'Delete test_example.py',
+    )
+  })
+
+  it('overrides stale workspace restrictions when Full Access is active', () => {
+    const prompt = 'Delete test_example.py'
+    const result = applyExecutionPolicyGuidance(
+      prompt,
+      cursorExecutionPolicy('danger-full-access'),
+    )
+    expect(result).toContain(
+      'supersedes every earlier Read Only or Workspace Write instruction',
+    )
+    expect(result).toContain(prompt)
+  })
+
+  it('tells Read Only agents to refuse mutations without fake progress', () => {
+    const result = applyExecutionPolicyGuidance(
+      'Create a test file and delete it.',
+      cursorExecutionPolicy('read-only'),
+    )
+    expect(result).toContain('do not claim that it is underway')
+    expect(result).toContain('switch the session to Workspace Write')
   })
 })
 
