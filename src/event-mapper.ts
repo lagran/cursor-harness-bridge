@@ -31,6 +31,16 @@ const READ_ONLY_TOOL_NAMES = new Set([
   'web_fetch',
   'readtodos',
 ])
+// Subagent delegation runs independently of the parent step sequence: the
+// model legitimately continues to a new step (or a new turn's worth of
+// steps) while a delegated task still executes in the background, and its
+// terminal tool_call event can arrive many steps later. A step boundary
+// crossing is therefore not evidence of incompleteness for this tool, unlike
+// synchronous tools where the protocol guarantees the result precedes the
+// next step.
+const ASYNC_TOOL_NAMES = new Set([
+  'task',
+])
 
 interface StepState {
   number: number
@@ -256,8 +266,14 @@ export class CursorEventMapper {
         || tool.resultLogged
         || (stepNumber !== undefined && tool.step !== stepNumber)
       ) continue
+      const isAsync = ASYNC_TOOL_NAMES.has(tool.name.toLowerCase())
+      // Only a step-scoped settlement (stepNumber defined) treats an async
+      // tool's step boundary as meaningless; the run-scoped settlement from
+      // finish()/abort() (stepNumber undefined) still must close its card,
+      // since nothing will update it once the run object is gone.
+      if (stepNumber !== undefined && isAsync) continue
       const aborted = reason === 'aborted'
-      const neutral = !aborted && READ_ONLY_TOOL_NAMES.has(tool.name.toLowerCase())
+      const neutral = !aborted && (READ_ONLY_TOOL_NAMES.has(tool.name.toLowerCase()) || isAsync)
       this.session.append('tool/result', {
         turn: this.turn,
         step: tool.step,
@@ -266,7 +282,9 @@ export class CursorEventMapper {
           content: [{
             type: 'text',
             text: neutral
-              ? `Cursor run completed without a separate terminal event for read-only tool "${tool.name}"; the card was closed without marking the run as failed.`
+              ? isAsync
+                ? `Cursor run ended while delegated task "${tool.name}" was still running in the background; its outcome was not reported before the run closed.`
+                : `Cursor run completed without a separate terminal event for read-only tool "${tool.name}"; the card was closed without marking the run as failed.`
               : aborted
                 ? `Cursor run was interrupted before "${tool.name}" returned a result.`
                 : `Cursor run ended before "${tool.name}" returned a terminal result; the operation may not have completed.`,
@@ -278,7 +296,7 @@ export class CursorEventMapper {
               meta: {
                 synthetic: true,
                 terminalEvent: 'missing',
-                disposition: 'neutral-read-only',
+                disposition: isAsync ? 'neutral-async-pending' : 'neutral-read-only',
               },
             }
           : {

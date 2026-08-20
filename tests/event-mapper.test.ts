@@ -197,6 +197,109 @@ describe('CursorEventMapper', () => {
     })
   })
 
+  it('leaves a delegated task pending across step boundaries instead of flagging it incomplete', () => {
+    const { session, mapper } = createMapper()
+    mapper.handleMessage({
+      type: 'tool_call',
+      agent_id: 'agent-1',
+      run_id: 'run-1',
+      call_id: 'task-1',
+      name: 'task',
+      status: 'running',
+      args: { description: 'delegate work' },
+    })
+    // The model continues reasoning and opens a new step while the
+    // delegated task is still running in the background — this must not
+    // synthesize a terminal result for the still-open task call.
+    mapper.handleDelta({ type: 'text-delta', text: 'moving on' })
+    mapper.handleMessage({
+      type: 'assistant',
+      agent_id: 'agent-1',
+      run_id: 'run-1',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'moving on' }] },
+    })
+    mapper.handleDelta({ type: 'text-delta', text: 'still going' })
+
+    expect(session.events.filter(event => event.type === 'tool/result')).toHaveLength(0)
+    expect(session.events.filter(event => event.type === 'step/start')).toHaveLength(2)
+
+    // The task's own progress streams as nested reasoning under its call id
+    // and must not be mistaken for a terminal event either.
+    mapper.handleDelta({
+      type: 'tool-call-delta',
+      callId: 'task-1',
+      modelCallId: 'task-1',
+      taskUpdate: { type: 'text-delta', text: 'progress update' },
+    })
+    expect(session.events.filter(event => event.type === 'tool/result')).toHaveLength(0)
+
+    // The real terminal event, once it finally arrives, still closes the
+    // card normally.
+    mapper.handleMessage({
+      type: 'tool_call',
+      agent_id: 'agent-1',
+      run_id: 'run-1',
+      call_id: 'task-1',
+      name: 'task',
+      status: 'completed',
+      result: { content: 'delegated work done' },
+    })
+    mapper.finish()
+
+    const results = session.events.filter(event => event.type === 'tool/result')
+    expect(results).toHaveLength(1)
+    expect(results[0]?.data.error).toBeUndefined()
+    expect(results[0]?.data.message.content[0]).toMatchObject({
+      type: 'tool-result',
+      toolCallId: 'task-1',
+      isError: false,
+    })
+  })
+
+  it('closes a delegated task neutrally if the run finishes before its result arrives, but red on abort', () => {
+    const finished = createMapper()
+    finished.mapper.handleMessage({
+      type: 'tool_call',
+      agent_id: 'agent-1',
+      run_id: 'run-1',
+      call_id: 'task-incomplete',
+      name: 'task',
+      status: 'running',
+      args: { description: 'delegate work' },
+    })
+    finished.mapper.finish()
+    const finishedResult = finished.session.events.find(event => event.type === 'tool/result')
+    expect(finishedResult?.data.error).toBeUndefined()
+    expect(finishedResult?.data.meta).toEqual({
+      synthetic: true,
+      terminalEvent: 'missing',
+      disposition: 'neutral-async-pending',
+    })
+    expect(finishedResult?.data.message.content[0]).toMatchObject({
+      type: 'tool-result',
+      toolCallId: 'task-incomplete',
+      isError: false,
+    })
+
+    const aborted = createMapper()
+    aborted.mapper.handleMessage({
+      type: 'tool_call',
+      agent_id: 'agent-1',
+      run_id: 'run-1',
+      call_id: 'task-cancelled',
+      name: 'task',
+      status: 'running',
+      args: { description: 'delegate work' },
+    })
+    aborted.mapper.abort()
+    expect(aborted.session.events.find(
+      event => event.type === 'tool/result',
+    )?.data.error).toEqual({
+      name: 'CursorToolCancelledError',
+      code: 'CURSOR_TOOL_CANCELLED',
+    })
+  })
+
   it('fails explicitly when Cursor asks for unsupported interactive input', () => {
     const { mapper } = createMapper()
     expect(() => mapper.handleMessage({
